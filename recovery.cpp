@@ -15,6 +15,7 @@
  */
 
 #include "recovery.h"
+#include "recovery_stage.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -729,15 +730,20 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   // otherwise set it to "installing system update".
   ui->SetSystemUpdateText(security_update);
 
-  int st_cur = 0, st_max = 0;
-  if (!device->GetStage().has_value() &&
-      sscanf(device->GetStage().value().c_str(), "%d/%d", &st_cur, &st_max) == 2) {
-    ui->SetStage(st_cur, st_max);
+  if (const auto stage = recovery::ParseRecoveryStage(device->GetStage()); stage.has_value()) {
+    ui->SetStage(stage->current, stage->maximum);
   }
 
   std::vector<std::string> title_lines =
       android::base::Split(android::base::GetProperty("ro.build.fingerprint", ""), ":");
   title_lines.insert(std::begin(title_lines), "Android Recovery");
+
+  // Preserve the original PixelExperience recovery device identification,
+  // without adding an empty heading if the recovery properties omit it.
+  const std::string product_device = android::base::GetProperty("ro.product.device", "");
+  if (!product_device.empty()) {
+    title_lines.insert(title_lines.begin() + 1, "Product: " + product_device);
+  }
   ui->SetTitle(title_lines);
 
   ui->ResetKeyInterruptStatus();

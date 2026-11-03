@@ -1,0 +1,53 @@
+name: AOSP 17 Recovery port checks
+
+on:
+  push:
+    branches:
+      - port/a17-recovery-pe-20261103
+  pull_request:
+    paths:
+      - recovery.cpp
+      - recovery_stage.h
+      - tests/host/recovery_stage_test.cpp
+      - install/install.cpp
+      - recovery_main.cpp
+      - .github/workflows/aosp17-recovery-checks.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-host-tests:
+    name: Recovery stage parser and source security guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed PE AOSP17 Recovery branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Compile real production stage parser in a host C++ test
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -I. \
+            tests/host/recovery_stage_test.cpp -o "$RUNNER_TEMP/recovery_stage_test"
+          "$RUNNER_TEMP/recovery_stage_test"
+      - name: Check security-sensitive AOSP17 recovery code remains enabled
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          recovery = Path("recovery.cpp").read_text()
+          main = Path("recovery_main.cpp").read_text()
+          install = Path("install/install.cpp").read_text()
+          assert "recovery::ParseRecoveryStage(device->GetStage())" in recovery
+          assert 'GetProperty("ro.product.device", "")' in recovery
+          assert "if (!product_device.empty())" in recovery
+          for name, code in (("recovery", recovery), ("recovery_main", main)):
+              assert 'return android::base::GetBoolProperty("ro.debuggable", false);' in code, name
+          assert "if (!verify_package(package, ui))" in install
+          assert "ViolatesSPLDowngrade(zip, current_spl)" in install
+          print("PASS: source guards and PE Recovery identification preserved")
+          PY
+      - name: Whitespace and patch-format validation
+        run: git diff --check HEAD~1 HEAD
