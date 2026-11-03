@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout reviewed PE AOSP17 Recovery branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - name: Compile real production stage parser in a host C++ test
         shell: bash
         run: |
