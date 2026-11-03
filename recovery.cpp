@@ -730,8 +730,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   ui->SetSystemUpdateText(security_update);
 
   int st_cur = 0, st_max = 0;
-  if (!device->GetStage().has_value() &&
-      sscanf(device->GetStage().value().c_str(), "%d/%d", &st_cur, &st_max) == 2) {
+  const auto stage = device->GetStage();
+  if (stage.has_value() && sscanf(stage->c_str(), "%d/%d", &st_cur, &st_max) == 2) {
     ui->SetStage(st_cur, st_max);
   }
 
