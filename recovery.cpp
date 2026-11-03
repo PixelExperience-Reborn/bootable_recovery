@@ -15,6 +15,7 @@
  */
 
 #include "recovery.h"
+#include "recovery_stage.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -729,10 +730,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   // otherwise set it to "installing system update".
   ui->SetSystemUpdateText(security_update);
 
-  int st_cur = 0, st_max = 0;
-  const auto stage = device->GetStage();
-  if (stage.has_value() && sscanf(stage->c_str(), "%d/%d", &st_cur, &st_max) == 2) {
-    ui->SetStage(st_cur, st_max);
+  if (const auto stage = recovery::ParseRecoveryStage(device->GetStage()); stage.has_value()) {
+    ui->SetStage(stage->current, stage->maximum);
   }
 
   std::vector<std::string> title_lines =
