@@ -17,6 +17,10 @@
 #include "install/fuse_install.h"
 
 #include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -37,9 +41,11 @@
 #include "fuse_provider.h"
 #include "fuse_sideload.h"
 #include "install/install.h"
+#include "install/usb_block_device.h"
 #include "recovery_utils/roots.h"
 
 static constexpr const char* SDCARD_ROOT = "/sdcard";
+static constexpr const char* USB_OTG_ROOT = "/mnt/pe-usbotg";
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 static constexpr int SDCARD_INSTALL_TIMEOUT = 10;
@@ -55,8 +61,18 @@ static void SetSdcardUpdateBootloaderMessage() {
 }
 
 // Returns the selected filename, or an empty string.
-static std::string BrowseDirectory(const std::string& path, Device* device, RecoveryUI* ui) {
-  ensure_path_mounted(path);
+static std::string BrowseDirectory(const std::string& path, Device* device, RecoveryUI* ui,
+                                   bool allow_block_maps = true, size_t depth = 0) {
+  // A USB filesystem is untrusted; bound recursion to avoid exhausting recovery's stack.
+  if (depth > 32) {
+    LOG(ERROR) << "Update package directory nesting too deep";
+    return "";
+  }
+  // PE USB media is mounted directly, not through a fixed fs_mgr fstab entry.
+  if (path != USB_OTG_ROOT &&
+      !android::base::StartsWith(path, std::string(USB_OTG_ROOT) + "/")) {
+    ensure_path_mounted(path);
+  }
 
   std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
   if (!d) {
@@ -76,7 +92,7 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
       if (name == "." || name == "..") continue;
       dirs.push_back(name + "/");
     } else if (de->d_type == DT_REG && (android::base::EndsWithIgnoreCase(name, ".zip") ||
-                                        android::base::EndsWithIgnoreCase(name, ".map"))) {
+                                        (allow_block_maps && android::base::EndsWithIgnoreCase(name, ".map")))) {
       entries.push_back(name);
     }
   }
@@ -95,8 +111,11 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
         headers, entries, chosen_item, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
 
-    // Return if WaitKey() was interrupted.
-    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+    // A menu can also time out or return an invalid selection. Never index the
+    // untrusted-media file list with a KeyError converted to size_t.
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED) ||
+        chosen_item == static_cast<size_t>(RecoveryUI::KeyError::TIMED_OUT) ||
+        chosen_item >= entries.size()) {
       return "";
     }
 
@@ -110,7 +129,7 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
     if (new_path.back() == '/') {
       // Recurse down into a subdirectory.
       new_path.pop_back();
-      std::string result = BrowseDirectory(new_path, device, ui);
+      std::string result = BrowseDirectory(new_path, device, ui, allow_block_maps, depth + 1);
       if (!result.empty()) return result;
     } else {
       // Selected a zip file: return the path to the caller.
@@ -202,6 +221,90 @@ InstallResult InstallWithFuseFromPath(std::string_view path, Device* device) {
     LOG(ERROR) << "Error exit from the fuse process: " << WEXITSTATUS(status);
   }
 
+  return result;
+}
+
+// Android17 replacement for PE's legacy external-volume update source.
+// Do not parse, write or repartition GPT; USB block partitions come from the kernel.
+static bool MountUsbOtgReadOnly(Device* device) {
+  RecoveryUI* ui = device->GetUI();
+  if (mkdir(USB_OTG_ROOT, 0700) != 0 && errno != EEXIST) {
+    PLOG(ERROR) << "Cannot create USB OTG mountpoint";
+    return false;
+  }
+  struct stat mountpoint_stat = {};
+  if (lstat(USB_OTG_ROOT, &mountpoint_stat) != 0 || !S_ISDIR(mountpoint_stat.st_mode)) {
+    LOG(ERROR) << "USB OTG mountpoint is not a directory";
+    return false;
+  }
+  std::unique_ptr<DIR, decltype(&closedir)> nodes(opendir("/sys/class/block"), closedir);
+  if (!nodes) {
+    PLOG(ERROR) << "Cannot enumerate USB block devices";
+    return false;
+  }
+  std::vector<std::string> partitions;
+  while (dirent* entry = readdir(nodes.get())) {
+    const std::string name(entry->d_name);
+    char resolved[PATH_MAX] = {};
+    const std::string sysfs = "/sys/class/block/" + name;
+    if (realpath(sysfs.c_str(), resolved) == nullptr ||
+        !pe::recovery::IsUsbBlockPartition(name, resolved)) {
+      continue;
+    }
+    const std::string block = "/dev/block/" + name;
+    struct stat st = {};
+    if (stat(block.c_str(), &st) == 0 && S_ISBLK(st.st_mode)) partitions.push_back(block);
+  }
+  std::sort(partitions.begin(), partitions.end());
+  partitions.erase(std::unique(partitions.begin(), partitions.end()), partitions.end());
+  if (partitions.empty()) {
+    ui->Print("No USB OTG block partitions detected.\n");
+    return false;
+  }
+
+  // The old PE volume manager allowed selection of several external volumes.
+  // Preserve that behavior without its obsolete libsgdisk/partition write APIs.
+  std::vector<std::string> choices{"Cancel"};
+  for (const auto& block : partitions) {
+    choices.push_back("USB partition: " + block);
+  }
+  constexpr unsigned long kMountFlags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
+  for (;;) {
+    const size_t selected = ui->ShowMenu(
+        {"Choose USB OTG partition (read-only)"}, choices, 0, true,
+        std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+    if (selected == 0 || selected > partitions.size()) {
+      // Covers Cancel, INTERRUPTED, TIMED_OUT and invalid menu positions.
+      return false;
+    }
+    const std::string& block = partitions[selected - 1];
+    for (const char* fs : { "vfat", "exfat", "ext4", "f2fs" }) {
+      // Avoid journal replay/metadata writes when probing an ext4 USB disk.
+      const char* options = (strcmp(fs, "ext4") == 0) ? "noload" : "";
+      if (mount(block.c_str(), USB_OTG_ROOT, fs, kMountFlags, options) == 0) {
+        ui->Print("USB OTG mounted read-only: %s (%s)\n", block.c_str(), fs);
+        return true;
+      }
+    }
+    ui->Print("Cannot mount %s read-only; select another USB partition.\n", block.c_str());
+  }
+}
+
+InstallResult ApplyFromUsbOtg(Device* device) {
+  RecoveryUI* ui = device->GetUI();
+  if (!MountUsbOtgReadOnly(device)) return INSTALL_ERROR;
+  std::string path = BrowseDirectory(USB_OTG_ROOT, device, ui, false /* ZIP only */);
+  if (path.empty()) {
+    ui->Print("No USB OTG package selected.\n");
+    umount2(USB_OTG_ROOT, MNT_DETACH);
+    return INSTALL_ERROR;
+  }
+  ui->Print("\n-- Install %s ...\n", path.c_str());
+  SetSdcardUpdateBootloaderMessage();
+  const InstallResult result = InstallWithFuseFromPath(path, device);
+  if (umount2(USB_OTG_ROOT, MNT_DETACH) != 0) {
+    PLOG(WARNING) << "Failed to unmount USB OTG";
+  }
   return result;
 }
 

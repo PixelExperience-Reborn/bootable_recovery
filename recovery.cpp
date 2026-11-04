@@ -478,6 +478,7 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
 
       case Device::APPLY_ADB_SIDELOAD:
       case Device::APPLY_SDCARD:
+      case Device::APPLY_USB_OTG:
       case Device::ENTER_RESCUE: {
         save_current_log = true;
 
@@ -500,10 +501,13 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
           status = ApplyFromAdb(device, false /* rescue_mode */, &reboot_action);
         } else {
           adb = false;
-          status = ApplyFromSdcard(device);
+          status = (chosen_action == Device::APPLY_USB_OTG)
+                       ? ApplyFromUsbOtg(device)
+                       : ApplyFromSdcard(device);
         }
 
-        ui->Print("\nInstall from %s completed with status %d.\n", adb ? "ADB" : "SD card", status);
+        const char* source = adb ? "ADB" : (chosen_action == Device::APPLY_USB_OTG ? "USB OTG" : "SD card");
+        ui->Print("\nInstall from %s completed with status %d.\n", source, status);
         if (status == INSTALL_REBOOT) {
           return reboot_action;
         }
@@ -736,7 +740,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
   std::vector<std::string> title_lines =
       android::base::Split(android::base::GetProperty("ro.build.fingerprint", ""), ":");
-  title_lines.insert(std::begin(title_lines), "Android Recovery");
+  title_lines.insert(std::begin(title_lines), "PixelExperience Recovery");
 
   // Preserve the original PixelExperience recovery device identification,
   // without adding an empty heading if the recovery properties omit it.

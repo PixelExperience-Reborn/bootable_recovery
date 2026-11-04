@@ -9,6 +9,12 @@ on:
       - recovery.cpp
       - recovery_stage.h
       - tests/host/recovery_stage_test.cpp
+      - tests/host/usb_block_device_test.cpp
+      - install/fuse_install.cpp
+      - install/include/install/fuse_install.h
+      - install/include/install/usb_block_device.h
+      - recovery_ui/device.cpp
+      - recovery_ui/include/recovery_ui/device.h
       - install/install.cpp
       - recovery_main.cpp
       - .github/workflows/aosp17-recovery-checks.yml
@@ -32,6 +38,35 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -I. \
             tests/host/recovery_stage_test.cpp -o "$RUNNER_TEMP/recovery_stage_test"
           "$RUNNER_TEMP/recovery_stage_test"
+      - name: Check PE USB OTG detection against internal UFS device names
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang++ -std=c++17 -Wall -Wextra -Werror -pedantic -Iinstall/include \
+            tests/host/usb_block_device_test.cpp -o "$RUNNER_TEMP/usb_block_device_test"
+          "$RUNNER_TEMP/usb_block_device_test"
+          python3 - <<'PY'
+          from pathlib import Path
+          fuse = Path("install/fuse_install.cpp").read_text()
+          assert "MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC" in fuse
+          assert "IsUsbBlockPartition(name, resolved)" in fuse
+          assert "InstallWithFuseFromPath(path, device)" in fuse
+          assert '"vfat", "exfat", "ext4", "f2fs"' in fuse
+          assert 'strcmp(fs, "ext4") == 0' in fuse and '"noload"' in fuse
+          assert '"Choose USB OTG partition (read-only)"' in fuse
+          assert "selected > partitions.size()" in fuse
+          assert "BrowseDirectory(USB_OTG_ROOT, device, ui, false" in fuse
+          assert "allow_block_maps &&" in fuse
+          assert "ApplyFromUsbOtg" in Path("recovery.cpp").read_text()
+          assert '"PixelExperience Recovery"' in Path("recovery.cpp").read_text()
+          assert '{ "Reboot to recovery", Device::REBOOT_RECOVERY }' in Path("recovery_ui/device.cpp").read_text()
+          assert "case Device::REBOOT_RECOVERY:" in Path("recovery_main.cpp").read_text()
+          assert "chosen_item >= entries.size()" in fuse
+          assert "KeyError::TIMED_OUT" in fuse
+          assert "depth > 32" in fuse and "depth + 1" in fuse
+          assert "libsgdisk" not in Path("Android.bp").read_text()
+          print("PASS: USB-only block selection and Android17 Fuse update path")
+          PY
       - name: Check security-sensitive AOSP17 recovery code remains enabled
         shell: bash
         run: |

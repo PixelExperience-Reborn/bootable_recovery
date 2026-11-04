@@ -29,9 +29,11 @@
 static std::vector<std::pair<std::string, Device::BuiltinAction>> g_menu_actions{
   { "Reboot system now", Device::REBOOT },
   { "Reboot to bootloader", Device::REBOOT_BOOTLOADER },
+  { "Reboot to recovery", Device::REBOOT_RECOVERY },
   { "Enter fastboot", Device::ENTER_FASTBOOT },
   { "Apply update from ADB", Device::APPLY_ADB_SIDELOAD },
   { "Apply update from SD card", Device::APPLY_SDCARD },
+  { "Apply update from USB OTG", Device::APPLY_USB_OTG },
   { "Wipe data/factory reset", Device::WIPE_DATA },
   { "Wipe cache partition", Device::WIPE_CACHE },
   { "Mount /system", Device::MOUNT_SYSTEM },

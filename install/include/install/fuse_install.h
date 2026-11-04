@@ -28,3 +28,6 @@
 InstallResult InstallWithFuseFromPath(std::string_view path, Device* device);
 
 InstallResult ApplyFromSdcard(Device* device);
+
+// PE USB OTG update source; only read-only, USB-backed block partitions.
+InstallResult ApplyFromUsbOtg(Device* device);
