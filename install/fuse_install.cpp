@@ -60,7 +60,13 @@ static void SetSdcardUpdateBootloaderMessage() {
 }
 
 // Returns the selected filename, or an empty string.
-static std::string BrowseDirectory(const std::string& path, Device* device, RecoveryUI* ui) {
+static std::string BrowseDirectory(const std::string& path, Device* device, RecoveryUI* ui,
+                                   size_t depth = 0) {
+  // A USB filesystem is untrusted; bound recursion to avoid exhausting recovery's stack.
+  if (depth > 32) {
+    LOG(ERROR) << "Update package directory nesting too deep";
+    return "";
+  }
   // PE USB media is mounted directly, not through a fixed fs_mgr fstab entry.
   if (path != USB_OTG_ROOT &&
       !android::base::StartsWith(path, std::string(USB_OTG_ROOT) + "/")) {
@@ -104,8 +110,11 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
         headers, entries, chosen_item, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
 
-    // Return if WaitKey() was interrupted.
-    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+    // A menu can also time out or return an invalid selection. Never index the
+    // untrusted-media file list with a KeyError converted to size_t.
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED) ||
+        chosen_item == static_cast<size_t>(RecoveryUI::KeyError::TIMED_OUT) ||
+        chosen_item >= entries.size()) {
       return "";
     }
 
@@ -119,7 +128,7 @@ static std::string BrowseDirectory(const std::string& path, Device* device, Reco
     if (new_path.back() == '/') {
       // Recurse down into a subdirectory.
       new_path.pop_back();
-      std::string result = BrowseDirectory(new_path, device, ui);
+      std::string result = BrowseDirectory(new_path, device, ui, depth + 1);
       if (!result.empty()) return result;
     } else {
       // Selected a zip file: return the path to the caller.

@@ -53,6 +53,9 @@ jobs:
           assert "InstallWithFuseFromPath(path, device)" in fuse
           assert '"vfat", "exfat"' in fuse
           assert "ApplyFromUsbOtg" in Path("recovery.cpp").read_text()
+          assert "chosen_item >= entries.size()" in fuse
+          assert "KeyError::TIMED_OUT" in fuse
+          assert "depth > 32" in fuse and "depth + 1" in fuse
           assert "libsgdisk" not in Path("Android.bp").read_text()
           print("PASS: USB-only block selection and Android17 Fuse update path")
           PY
