@@ -58,6 +58,9 @@ jobs:
           assert "BrowseDirectory(USB_OTG_ROOT, device, ui, false" in fuse
           assert "allow_block_maps &&" in fuse
           assert "ApplyFromUsbOtg" in Path("recovery.cpp").read_text()
+          assert '"PixelExperience Recovery"' in Path("recovery.cpp").read_text()
+          assert '{ "Reboot to recovery", Device::REBOOT_RECOVERY }' in Path("recovery_ui/device.cpp").read_text()
+          assert "case Device::REBOOT_RECOVERY:" in Path("recovery_main.cpp").read_text()
           assert "chosen_item >= entries.size()" in fuse
           assert "KeyError::TIMED_OUT" in fuse
           assert "depth > 32" in fuse and "depth + 1" in fuse

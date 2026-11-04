@@ -740,7 +740,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
   std::vector<std::string> title_lines =
       android::base::Split(android::base::GetProperty("ro.build.fingerprint", ""), ":");
-  title_lines.insert(std::begin(title_lines), "Android Recovery");
+  title_lines.insert(std::begin(title_lines), "PixelExperience Recovery");
 
   // Preserve the original PixelExperience recovery device identification,
   // without adding an empty heading if the recovery properties omit it.
