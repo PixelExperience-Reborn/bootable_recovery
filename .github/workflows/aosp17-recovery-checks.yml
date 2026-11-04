@@ -51,7 +51,12 @@ jobs:
           assert "MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC" in fuse
           assert "IsUsbBlockPartition(name, resolved)" in fuse
           assert "InstallWithFuseFromPath(path, device)" in fuse
-          assert '"vfat", "exfat"' in fuse
+          assert '"vfat", "exfat", "ext4", "f2fs"' in fuse
+          assert 'strcmp(fs, "ext4") == 0' in fuse and '"noload"' in fuse
+          assert '"Choose USB OTG partition (read-only)"' in fuse
+          assert "selected > partitions.size()" in fuse
+          assert "BrowseDirectory(USB_OTG_ROOT, device, ui, false" in fuse
+          assert "allow_block_maps &&" in fuse
           assert "ApplyFromUsbOtg" in Path("recovery.cpp").read_text()
           assert "chosen_item >= entries.size()" in fuse
           assert "KeyError::TIMED_OUT" in fuse
