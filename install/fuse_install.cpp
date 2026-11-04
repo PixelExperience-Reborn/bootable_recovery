@@ -17,6 +17,9 @@
 #include "install/fuse_install.h"
 
 #include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -37,9 +40,11 @@
 #include "fuse_provider.h"
 #include "fuse_sideload.h"
 #include "install/install.h"
+#include "install/usb_block_device.h"
 #include "recovery_utils/roots.h"
 
 static constexpr const char* SDCARD_ROOT = "/sdcard";
+static constexpr const char* USB_OTG_ROOT = "/mnt/pe-usbotg";
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 static constexpr int SDCARD_INSTALL_TIMEOUT = 10;
@@ -56,7 +61,11 @@ static void SetSdcardUpdateBootloaderMessage() {
 
 // Returns the selected filename, or an empty string.
 static std::string BrowseDirectory(const std::string& path, Device* device, RecoveryUI* ui) {
-  ensure_path_mounted(path);
+  // PE USB media is mounted directly, not through a fixed fs_mgr fstab entry.
+  if (path != USB_OTG_ROOT &&
+      !android::base::StartsWith(path, std::string(USB_OTG_ROOT) + "/")) {
+    ensure_path_mounted(path);
+  }
 
   std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
   if (!d) {
@@ -202,6 +211,68 @@ InstallResult InstallWithFuseFromPath(std::string_view path, Device* device) {
     LOG(ERROR) << "Error exit from the fuse process: " << WEXITSTATUS(status);
   }
 
+  return result;
+}
+
+// Android17 replacement for PE's legacy external-volume update source.
+// Do not parse, write or repartition GPT; USB block partitions come from the kernel.
+static bool MountUsbOtgReadOnly(RecoveryUI* ui) {
+  if (mkdir(USB_OTG_ROOT, 0700) != 0 && errno != EEXIST) {
+    PLOG(ERROR) << "Cannot create USB OTG mountpoint";
+    return false;
+  }
+  struct stat mountpoint_stat = {};
+  if (lstat(USB_OTG_ROOT, &mountpoint_stat) != 0 || !S_ISDIR(mountpoint_stat.st_mode)) {
+    LOG(ERROR) << "USB OTG mountpoint is not a directory";
+    return false;
+  }
+  std::unique_ptr<DIR, decltype(&closedir)> nodes(opendir("/sys/class/block"), closedir);
+  if (!nodes) {
+    PLOG(ERROR) << "Cannot enumerate USB block devices";
+    return false;
+  }
+  std::vector<std::string> partitions;
+  while (dirent* entry = readdir(nodes.get())) {
+    const std::string name(entry->d_name);
+    char resolved[PATH_MAX] = {};
+    const std::string sysfs = "/sys/class/block/" + name;
+    if (realpath(sysfs.c_str(), resolved) == nullptr ||
+        !pe::recovery::IsUsbBlockPartition(name, resolved)) {
+      continue;
+    }
+    const std::string block = "/dev/block/" + name;
+    struct stat st = {};
+    if (stat(block.c_str(), &st) == 0 && S_ISBLK(st.st_mode)) partitions.push_back(block);
+  }
+  std::sort(partitions.begin(), partitions.end());
+  constexpr unsigned long kMountFlags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
+  for (const auto& block : partitions) {
+    for (const char* fs : { "vfat", "exfat" }) {
+      if (mount(block.c_str(), USB_OTG_ROOT, fs, kMountFlags, "") == 0) {
+        ui->Print("USB OTG mounted read-only: %s (%s)\n", block.c_str(), fs);
+        return true;
+      }
+    }
+  }
+  ui->Print("No readable FAT/exFAT USB OTG partition found.\n");
+  return false;
+}
+
+InstallResult ApplyFromUsbOtg(Device* device) {
+  RecoveryUI* ui = device->GetUI();
+  if (!MountUsbOtgReadOnly(ui)) return INSTALL_ERROR;
+  std::string path = BrowseDirectory(USB_OTG_ROOT, device, ui);
+  if (path.empty()) {
+    ui->Print("No USB OTG package selected.\n");
+    umount2(USB_OTG_ROOT, MNT_DETACH);
+    return INSTALL_ERROR;
+  }
+  ui->Print("\n-- Install %s ...\n", path.c_str());
+  SetSdcardUpdateBootloaderMessage();
+  const InstallResult result = InstallWithFuseFromPath(path, device);
+  if (umount2(USB_OTG_ROOT, MNT_DETACH) != 0) {
+    PLOG(WARNING) << "Failed to unmount USB OTG";
+  }
   return result;
 }
 
